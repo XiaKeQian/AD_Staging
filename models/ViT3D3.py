@@ -7,7 +7,7 @@ from AAL_APE.patch_utils import compute_patch_centers
 from TokenTrimmer.TokenTrimmer import TokenTrimmer
 import nibabel as nib
 from REAM.REAM import REAM
-#2加
+#3加
 # 🔧 自动补齐体积到 patch_size 的倍数
 def pad_to_divisible(x, patch_size):
     _, _, d, h, w = x.shape
@@ -39,7 +39,7 @@ class PatchEmbed3D(nn.Module):
 class ViT3D(nn.Module):
     def __init__(self, num_classes=4, patch_size=(16,16,16)):
         super().__init__()
-        self.vit = vit_b_16(weights=None)#ViT_B_16_Weights.IMAGENET1K_V1)
+        self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
 
         self.hidden_dim = self.vit.hidden_dim  # 保存方便用
 
@@ -105,12 +105,12 @@ class ViT3D(nn.Module):
 
         # 3) 并行调用
         # 3a) 模块2：TokenLearner → 微观 M 个 token
-        tl_out = self.token_learner(patch_tokens)  # [B, M, C]
+        #tl_out = self.token_learner(patch_tokens)  # [B, M, C]
         # 3b) 模块3：REAM → 宏观 N 个增强 patch
-        #ream_out = self.ream(patch_tokens, region_ids)  # [B, N, C]
+        ream_out = self.ream(patch_tokens, region_ids)  # [B, N, C]
 
         # 4) 拼接 CLS + tl_out + ream_out，再送编码器
-        x = torch.cat([cls_token, tl_out], dim=1)  # [B, 1+M+N, C]
+        x = torch.cat([cls_token, ream_out], dim=1)  # [B, 1+M+N, C]
         x = self.encoder_blocks(x)
         x = self.encoder_norm(x)
         logits = self.heads(x[:, 0])  # [B, num_classes]

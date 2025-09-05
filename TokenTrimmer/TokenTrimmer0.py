@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-class TokenLearner(nn.Module):
+class TokenTrimmer(nn.Module):
     def __init__(self, dim, num_output_tokens):
         super().__init__()
         self.num_output_tokens = num_output_tokens

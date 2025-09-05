@@ -28,7 +28,7 @@ model = ViT3D(num_classes=4).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 # ✅ 训练 + 验证循环
-for epoch in range(50):
+for epoch in range(2000):
     model.train()
     total_loss = 0
     correct = 0

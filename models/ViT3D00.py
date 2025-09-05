@@ -4,10 +4,8 @@ import torch.nn.functional as F
 from torchvision.models.vision_transformer import vit_b_16, ViT_B_16_Weights
 from AAL_APE import AAL_APE
 from AAL_APE.patch_utils import compute_patch_centers
-from TokenTrimmer.TokenTrimmer import TokenTrimmer
 import nibabel as nib
-from REAM.REAM import REAM
-#2加
+
 # 🔧 自动补齐体积到 patch_size 的倍数
 def pad_to_divisible(x, patch_size):
     _, _, d, h, w = x.shape
@@ -39,7 +37,7 @@ class PatchEmbed3D(nn.Module):
 class ViT3D(nn.Module):
     def __init__(self, num_classes=4, patch_size=(16,16,16)):
         super().__init__()
-        self.vit = vit_b_16(weights=None)#ViT_B_16_Weights.IMAGENET1K_V1)
+        self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
 
         self.hidden_dim = self.vit.hidden_dim  # 保存方便用
 
@@ -71,47 +69,47 @@ class ViT3D(nn.Module):
         # 替换分类头
         self.heads = nn.Linear(self.vit.hidden_dim, num_classes)
 
-        # 你可以把 M（输出 token 数）设成你想要的值，比如 128
-        self.token_learner = TokenLearner(dim=self.hidden_dim, num_output_tokens=128)
-
-        # REAM（模块3）
-        self.ream = REAM(embed_dim=self.hidden_dim, num_regions=116)
-
-        # def forward(self, x):  # x: [B,1,D,H,W]
+    # def forward(self, x):  # x: [B,1,D,H,W]
     #     return self.vit(x)
-    def forward(self, x, mri_affine, original_shape):
-        B = x.shape[0]
+    def forward(self, x, mri_affine, original_shape):  # 新增两个参数  # x: [B, 1, D, H, W]
+        x = self.patch_embed(x)  # 3D patch embedding → [B, N, C]
+        B, N, C = x.shape
 
-        # 1) PatchEmbedding + cls_token
-        x = self.patch_embed(x)  # [B, N, C]
-        cls = self.cls_token.expand(B, -1, -1)  # [B,1,C]
-        x = torch.cat([cls, x], dim=1)  # [B, N+1, C]
+        cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # [B, 1, C]
+        x = torch.cat((cls_token, x), dim=1)  # 添加分类 token → [B, N+1, C]
 
-        # 2) AAL-APE 得到位置编码 + region_ids
+
+        # # 🔧 动态生成 position embedding
+        # if (self.pos_embed is None) or (self.pos_embed.size(1) != x.size(1)):
+        #     self.pos_embed = nn.Parameter(
+        #         torch.zeros(1, x.size(1), C, device=x.device)
+        #     )
+        #     nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        #
+        # x = x + self.pos_embed[:, :x.size(1)]  # 🔧 防止 patch 数不同时报错
+
+
+        # =============== 🔥 加入结构位置编码 ===============
+        # ✅ Padding 已知：
+        # 输入体积 shape = (197, 233, 189)
+        # patch size = (16, 16, 16)
+        # padding = (D:11, H:7, W:3)
         patch_centers = compute_patch_centers(
             img_shape=original_shape,
             patch_size=self.patch_embed.patch_size,
             padding=(11, 7, 3)
-        )  # [N,3]
-        patch_centers = patch_centers.unsqueeze(0).expand(B, -1, -1).to(x.device)
-        region_pe, region_ids = self.aal_pe(patch_centers, mri_affine, return_ids=True)
-        cls_pe = torch.zeros((B, 1, self.hidden_dim), device=x.device)
+        )  # [N, 3] voxel 中心点
+
+        patch_centers = patch_centers.unsqueeze(0).expand(B, -1, -1).to(x.device)  # [B, N, 3]
+
+        region_pe = self.aal_pe(patch_centers, mri_affine)  # [B, N, C]
+        # ✅ 为 cls_token 添加结构位置编码（全 0 向量）
+        cls_pe = torch.zeros((B, 1, C), device=x.device)  # [B, 1, C]
         region_pe = torch.cat([cls_pe, region_pe], dim=1)  # [B, N+1, C]
-        x = x + region_pe  # [B, N+1, C]
+        x = x + region_pe
+        # ================================================
 
-        # 拆出 patch tokens（去掉 CLS）
-        cls_token = x[:, :1, :]  # [B,1,C]
-        patch_tokens = x[:, 1:, :]  # [B, N, C]
-
-        # 3) 并行调用
-        # 3a) 模块2：TokenLearner → 微观 M 个 token
-        tl_out = self.token_learner(patch_tokens)  # [B, M, C]
-        # 3b) 模块3：REAM → 宏观 N 个增强 patch
-        #ream_out = self.ream(patch_tokens, region_ids)  # [B, N, C]
-
-        # 4) 拼接 CLS + tl_out + ream_out，再送编码器
-        x = torch.cat([cls_token, tl_out], dim=1)  # [B, 1+M+N, C]
-        x = self.encoder_blocks(x)
+        x = self.encoder_blocks(x)  # ✅ 自己调用 block
         x = self.encoder_norm(x)
-        logits = self.heads(x[:, 0])  # [B, num_classes]
-        return logits
+        x = self.heads(x[:, 0])  # 取 [CLS] token
+        return x
